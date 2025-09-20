@@ -1,51 +1,56 @@
-from flask import Flask, request, send_file, abort, jsonify
-import os, random, time
-
-BASE = os.path.dirname(os.path.abspath(__file__))
-GEN4_DIR = os.path.join(BASE, "wonder_gen4")
-GEN5_DIR = os.path.join(BASE, "wonder_gen5")
-LOGFILE = os.path.join(BASE, "server.log")
+from flask import Flask, request, Response, send_from_directory
+import os, random, datetime, xml.etree.ElementTree as ET
 
 app = Flask(__name__)
 
-def log(msg):
-    ts = time.strftime("%Y-%m-%d %H:%M:%S")
-    line = f"[{ts}] {msg}\n"
-    print(line, end="")
-    with open(LOGFILE, "a") as f:
-        f.write(line)
+BASE_DIR = os.path.dirname(__file__)
+LOG_DIR = os.path.join(BASE_DIR, "ac_logs")
+EVENTS_GEN4 = os.path.join(BASE_DIR, "wonder_gen4")
+EVENTS_GEN5 = os.path.join(BASE_DIR, "wonder_gen5")
 
-def list_files(folder, exts):
-    return [f for f in os.listdir(folder) if any(f.lower().endswith(e) for e in exts)]
+os.makedirs(LOG_DIR, exist_ok=True)
 
-@app.route("/")
-def index():
-    return "Pokémon Wonder Card Server running"
+# ===== Logging helper =====
+def save_raw_request(prefix: str, data: bytes, headers: dict):
+    ts = datetime.datetime.utcnow().strftime("%Y%m%dT%H%M%S%fZ")
+    filename = f"{prefix}_{ts}.bin"
+    with open(os.path.join(LOG_DIR, filename), "wb") as f:
+        f.write(data)
+    with open(os.path.join(LOG_DIR, filename + ".meta"), "w", encoding="utf-8") as f:
+        for k, v in headers.items():
+            f.write(f"{k}: {v}\n")
 
-@app.route("/gen4")
-def gen4():
-    files = list_files(GEN4_DIR, [".pcd", ".pgt"])
-    if not files: return abort(404, "No Gen4 files")
-    chosen = request.args.get("file") or random.choice(files)
-    if chosen not in files: return abort(404, "File not found")
-    log(f"Gen4 send {chosen} to {request.remote_addr}")
-    return send_file(os.path.join(GEN4_DIR, chosen), mimetype="application/octet-stream")
+# ===== Gen 4: random event =====
+@app.route("/gen4/event", methods=["GET"])
+def gen4_event():
+    files = [f for f in os.listdir(EVENTS_GEN4) if f.lower().endswith((".pgt", ".pcd"))]
+    if not files:
+        return Response("<error>No Gen4 events found</error>", mimetype="application/xml")
 
-@app.route("/gen5")
-def gen5():
-    files = list_files(GEN5_DIR, [".pgf"])
-    if not files: return abort(404, "No Gen5 files")
-    chosen = request.args.get("file") or random.choice(files)
-    if chosen not in files: return abort(404, "File not found")
-    log(f"Gen5 send {chosen} to {request.remote_addr}")
-    return send_file(os.path.join(GEN5_DIR, chosen), mimetype="application/octet-stream")
+    chosen = random.choice(files)
+    print(f"Serving Gen4 event: {chosen}")
+    return send_from_directory(EVENTS_GEN4, chosen, mimetype="application/octet-stream")
 
-@app.route("/list")
-def list_all():
-    return jsonify({
-        "gen4": list_files(GEN4_DIR, [".pcd", ".pgt"]),
-        "gen5": list_files(GEN5_DIR, [".pgf"])
-    })
+# ===== Gen 5: random event =====
+@app.route("/gen5/event", methods=["GET"])
+def gen5_event():
+    files = [f for f in os.listdir(EVENTS_GEN5) if f.lower().endswith(".pgf")]
+    if not files:
+        return Response("<error>No Gen5 events found</error>", mimetype="application/xml")
+
+    chosen = random.choice(files)
+    print(f"Serving Gen5 event: {chosen}")
+    return send_from_directory(EVENTS_GEN5, chosen, mimetype="application/octet-stream")
+
+# ===== Catch-all =====
+@app.route('/', defaults={'path': ''}, methods=['GET','POST'])
+@app.route('/<path:path>', methods=['GET','POST'])
+def catch_all(path):
+    raw = request.get_data()
+    headers = dict(request.headers)
+    save_raw_request(f"unknown_{path}", raw, headers)
+    print(f"Unhandled request: /{path}")
+    return Response("<error>Unhandled path</error>", mimetype="application/xml")
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=80)
+    app.run(host="0.0.0.0", port=8080)
